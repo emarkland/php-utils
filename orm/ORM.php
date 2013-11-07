@@ -2,6 +2,31 @@
 require_once('MySQLException.php');
 
 /**
+ * ORM Needs....
+Primary Key Support
+Foreign Key Support?
+
+Get/Set Methods
+FindAllBy{BLAH, Options}
+FindBy(Primary/Foreign Key)
+Create/Commit() --> Save()?
+
+varchar --> string (with max size)
+datetime --> date
+int --> int (32) or long (64)
+bit --> boolean
+text -> string (unlimited size)
+indexSupport? (how to handle multiple indices?)
+
+
+// establish connection to database
+// generate query to fetch schema
+// generate files into an output directory from schemas
+// should validate that files are correctly generated
+ */
+
+
+/**
  * Manage a MySQL connection
  *
  * @package MySQL
