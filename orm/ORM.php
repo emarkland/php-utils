@@ -27,6 +27,7 @@ indexSupport? (how to handle multiple indices?)
 class ORM extends MySQLAbstract {
     private $_Table;
     private $_modelChanged = "\$_modelChanged";
+    private $_existsInDB = "\$_existsInDB";
 
     public function __construct($table, $host=null, $dbName=null, $user=null, $pass=null, $options=null) {
         parent::__construct($host, $dbName, $user, $pass, $options);
@@ -72,19 +73,82 @@ class ORM extends MySQLAbstract {
         foreach ($tableSchema as $fieldInfo) {
             fwrite($file, $this->createVar($fieldInfo, $tableSchema));
         }
+        fwrite($file, $this->saveMethod($tableSchema));
         $this->closeFile($file, $tableSchema);
+    }
+
+
+    private function saveMethod($tableSchema) {
+        $primaryKey = null;
+        foreach ($tableSchema as $fieldInfo) {
+            $fieldNames[] = $fieldInfo["Field"];
+            if (strtolower($fieldInfo["key"]) === 'pri') {
+                $primaryKey = $fieldInfo;
+            }
+        }
+
+
+        $str = "
+            /**
+            * Save $this->_Table into database
+            * @return True, if saved into database. False, if otherwise.
+            **/
+            public function save() {
+                if (\$this->$this->_existsInDB && !\$this->$this->modelChanged) {
+                    return false;
+                }
+                return (\$_this->$this->_existsInDB) ? \$this->create() : \$this->commit();
+            }
+
+            private function create() {
+                \$query = \"INSERT INTO $this->_Table . ('" . implode("','", $fieldNames) . "')" .
+                " VALUES (" . ":" . implode(",:", $fieldNames) . ")\";
+
+                \$result = \$this->createBase(\$query, array(";
+
+        foreach ($tableSchema as $fieldInfo) {
+            $name = $fieldInfo["Field"];
+            $pdoType = $this->getPDOTypeAsString($fieldInfo["name"]);
+            $str .= "
+            :$name => array('\$this->$name', $pdoType);";
+        }
+        $str .= "));
+                if (\$result === null || \$result === -1) return false;
+                \$this->$this->_existsInDB = true;
+                return true;
+            }
+
+            private function commit() {
+                \$query = \"UPDATE $this->_Table SET ";
+        foreach ($tableSchema as $fieldInfo) {
+            if ($fieldInfo["Field"] !== $primaryKey["Field"]) {
+                $str .= "`fieldInfo['Field']`=:$fieldInfo,";
+            }
+        }
+        $str = substr($str, 0, -1);
+        $primaryFieldName = $primaryKey["Field"];
+        $str .= " WHERE `$primaryFieldName`=:$primaryFieldName
+        \$result = \$this->process(\$query, array(";
+
+        foreach ($tableSchema as $fieldInfo) {
+            $name = $fieldInfo["Field"];
+            $pdoType = $this->getPDOTypeAsString($fieldInfo["name"]);
+            $str .= "':$name' => array(\$this->$name, $pdoType),";
+        }
+        $str .= "));
+        return \$result == null;
+        ";
+
+        return $str;
     }
 
     private function createFile() {
         $filename = $this->_Table . ".php";
         $fPtr = fopen($filename, "w") or die("Can't create file $filename");
 
-        $str = "
-        <?php
-
-        require_once(\"MySQLAbstract.php\");
-        class $this->_Table extends MySQLAbstract {
-        ";
+        $str = "<?php
+require_once(\"MySQLAbstract.php\");
+class $this->_Table extends MySQLAbstract {";
         // add headers
         fwrite($fPtr, $str);
         return $fPtr;
@@ -92,12 +156,12 @@ class ORM extends MySQLAbstract {
 
     private function closeFile($file, $tableSchema){
         $str = "
-            private $this->_modelChanged = false;
-            protected function modelChanged() {
-                return \$this->$this->_modelChanged;
-            }
-        }
-        ?>
+    private $this->_modelChanged = false;
+    protected function modelChanged() {
+        return \$this->$this->_modelChanged;
+    }
+}
+?>
         ";
         fwrite($file, $str);
         fclose($file);
@@ -124,10 +188,10 @@ class ORM extends MySQLAbstract {
         $canAutoIncrement = strpos($extra, 'auto_increment') !== FALSE;
 
         $str = "
-            private \$_$field;
-            public function get$field() {
-                return \$this->_$field;
-            }
+    private \$_$field;
+    public function get$field() {
+        return \$this->_$field;
+    }
         ";
 
         if (!$canAutoIncrement) {
@@ -143,39 +207,40 @@ class ORM extends MySQLAbstract {
             }
 
             $str .= "
-                public function set$field($newFieldValue) {
-                    $nullConstraint
-                    \$this->_$field = $newFieldValue;
-                    \$this->$this->_modelChanged = true;
-                }
-            ";
+    public function set$field($newFieldValue) { ";
+            if ($nullConstraint !== '') {
+                $str .= $nullConstraint;
+            }
+            $str .= "
+        \$this->_$field = $newFieldValue;
+        \$this->$this->_modelChanged = true;
+    }";
         }
 
         $fieldValueAsVar = "\$$fieldValue";
         if ($isPrimaryKey) {
             $resultPlaceHolder = '$result';
             $str .= "
-                public function findBy$field($fieldValueAsVar) {
-                    $nullConstraint
-                    \$query = 'SELECT * FROM $this->_Table WHERE `$field` = :val';
-                    $resultPlaceHolder = \$this->getOne(\$query, array(
-                        ':val' => array($fieldValueAsVar, $pdoType),
-                    ));
-                    " . $this->setValueFromFetch(false, $resultPlaceHolder, $tableSchema) . "
-                }
-            ";
+    public function findBy$field($fieldValueAsVar) {
+        $nullConstraint
+        \$query = 'SELECT * FROM $this->_Table WHERE `$field` = :val';
+        $resultPlaceHolder = \$this->getOne(\$query, array(
+            ':val' => array($fieldValueAsVar, $pdoType),
+        ));
+        " . $this->setValueFromFetch(false, $resultPlaceHolder, $tableSchema) . "
+    }";
         } else {
             $resultPlaceHolder = '$results';
             $str .= "
-                public function findAllBy$field($fieldValueAsVar) {
-                    $nullConstraint
-                    \$query = 'SELECT * FROM $this->_Table WHERE `$field`= :val';
-                    $resultPlaceHolder = \$this->getAll(\$query, array(
-                        ':val' => array($fieldValueAsVar, $pdoType),
-                    ));
-                    " . $this->setValueFromFetch(true, $resultPlaceHolder, $tableSchema) . "
-                }
-            ";
+    public function findAllBy$field($fieldValueAsVar) {
+        $nullConstraint
+        \$query = 'SELECT * FROM $this->_Table WHERE `$field`= :val';
+        $resultPlaceHolder = \$this->getAll(\$query, array(
+            ':val' => array($fieldValueAsVar, $pdoType),
+        ));
+        " . $this->setValueFromFetch(true, $resultPlaceHolder, $tableSchema) . "
+    }
+    ";
         }
         return $str;
     }
@@ -189,23 +254,26 @@ class ORM extends MySQLAbstract {
             $str = "foreach ($resultPlaceHolder as \$entry => $itemVal) {";
         }
         $itemVar = "\$item";
-        $i = "$itemVar = new " . $this->_Table . '();';
+        $i = "
+            $itemVar = new " . $this->_Table . '();';
 
         foreach ($tableSchema as $fieldInfo) {
             $fieldName = $fieldInfo['field'];
             $fieldValue = $itemVal . '["' . $fieldName . '"]';
-            $i .= "$itemVar->" . "_$fieldName = $fieldValue;";
+            $i .= "
+            $itemVar->" . "_$fieldName = $fieldValue;";
         }
 
         if ($isMulti) {
             $str .= $i;
             $str .= "
-                \$items[] = $itemVar;
-            }
-            return \$items;";
+            \$items[] = $itemVar;
+        }
+        return \$items;";
         } else {
             $str = $i;
-            $str .= "return $itemVar;";
+            $str .= "
+            return $itemVar;";
         }
         return $str;
     }
