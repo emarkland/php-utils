@@ -1,6 +1,5 @@
 <?php
-require_once('MySQLException.php');
-
+require_once("MySQLAbstract.php");
 /**
  * ORM Needs....
 Primary Key Support
@@ -25,126 +24,184 @@ indexSupport? (how to handle multiple indices?)
 // should validate that files are correctly generated
  */
 
+class ORM extends MySQLAbstract {
+    private $_Table;
 
-/**
- * Manage a MySQL connection
- *
- * @package MySQL
- */
-abstract class MySQL
-{
-    private $Host;
-    private $DBName;
-    private $User;
-    private $Pass;
-    private $Connection;
+    private $DBTYPE_TO_PDOTYPE = array(
+        ''
+    );
 
-    /**
-     * Connect to a MySQL database
-     *
-     * @param String $host The host or domain name
-     * @param String $dbName The name of the database to connect to
-     * @param String $user The db user name
-     * @param String $pass The db user name's password
-     */
-    public function __construct($host=null, $dbName=null, $user=null, $pass=null, $options=null)
+    public function __construct($table, $host=null, $dbName=null, $user=null, $pass=null, $options=null) {
+        parent::__construct($host, $dbName, $user, $pass, $options);
+        $this->_Table = $table;
+    }
+    private function getSchema() {
+        $query =
+            "SELECT
+                COLUMN_NAME AS 'field',
+                COLUMN_TYPE AS 'type',
+                IS_NULLABLE AS 'null',
+                COLUMN_KEY AS 'key',
+                COLUMN_DEFAULT AS 'default',
+                EXTRA AS 'extra'
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE
+                `TABLE_NAME` = :table_name AND
+                 `TABLE_SCHEMA` = :table_schema
+            ORDER BY Field";
+
+        return $this->getAll($query, array(
+            ":table_name" => array($this->_Table, PDO::PARAM_STR),
+            ":table_schema" => array($this->getDBName(), PDO::PARAM_STR)
+        ));
+    }
+
+    private function getSchemaAsJson() {
+        return json_encode($this->getSchema());
+    }
+    public function showSchema() {
+        echo $this->getSchemaAsJson();
+    }
+
+    public function showType() {
+        $json = $this->getSchema();
+        $t = $json[0]["type"];
+        echo json_encode($this->parseType($t));
+    }
+    // Schema to file methods
+    public function generateFile()
     {
-        if (($host == null) && ($dbName == null) && ($user == null) && ($pass == null)) {
-            $mysql = $GLOBALS["config"]["mysql"];
-            $host = $mysql["host"];
-            $dbName = $mysql["dbname"];
-            $user = $mysql["user"];
-            $pass = $mysql["pass"];
+        $file = $this->createFile();
+        foreach ($this->getSchema() as $fieldInfo) {
+            fwrite($file, $this->createVar($fieldInfo));
         }
-
-        $this->Host = $host;
-        $this->DBName = $dbName;
-        $this->User = $user;
-        $this->Pass = $pass;
-
-        if (!$this->Connection instanceof PDO) {
-            try {
-                $this->Connection = new PDO("mysql:host=$this->Host;dbname=$this->DBName", $this->User, $this->Pass);
-                $this->Connection->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-            } catch (PDOException $e) {
-                //TODO: Create that log class and log this exception
-                throw new MySQLConnectionException($e);
-            }
-        }
+        $this->closeFile($file);
     }
 
-    /**
-     * Process query
-     * @param String $query The query to be processed
-     * @param Array @queryParams Extra query string parameters (Format: [name1 => [value1, pdo object type], name2 => [value2, pdo object type], ...])
-     * @return Boolean True, if the query was sucessfully processed. False, if otherwise.
-     */
-    protected function process($query, $queryParams) {
-        $this->makeConnection();
+    private function createFile() {
+        $filename = $this->_Table . ".php";
+        $fPtr = fopen($filename, "w") or die("Can't create file $filename");
 
-        try {
-            $preparedQuery = $this->Connection->prepare($query);
-            if ($queryParams !== null && gettype($queryParams) === 'array') {
-                foreach ($queryParams as $name => $value) {
-                    if (count($value) === 2) {
-                        $preparedQuery->bindParam($name, $value[0], $value[1]);
+        // add headers
+
+        return $fPtr;
+    }
+
+    private function closeFile($file){
+        fwrite($file, "<?php>");
+        fclose($file);
+    }
+
+    private function createVar($fieldInfo)
+    {
+        $field = $fieldInfo["field"];
+        $fieldValue = $field . "Value";
+
+        $type = parseType($fieldInfo["type"]);
+        $pdoType = getPDOType($type["type"]);
+
+        $null = $fieldInfo["null"];
+        $isNullable = $null === "YES";
+        $nullConstraint = "";
+
+        $key = $fieldInfo["key"];
+        $isPrimaryKey = strtolower($key) === 'pri';
+
+        $defaultValue = $fieldInfo["default"];
+
+        $extra = $fieldInfo["extra"];
+        $canAutoIncrement = strpos($extra, 'auto_increment') !== FALSE;
+
+        $str = "
+            private \$_$field;
+            public function get$field() {
+                return \$_$field;
+            }
+        ";
+
+        if (!$canAutoIncrement) {
+            $newFieldValue = "\$new" . $fieldValue;
+
+            $nullConstraint = '';
+            if ($isNullable) {
+                $nullConstraint = "
+                    if ($newFieldValue == NULL) {
+                        die('\'$newFieldValue\' can't be null');
                     }
+                ";
+            }
+
+            $str .= "
+                public function set$field($newFieldValue) {
+                    $nullConstraint
+                    \$_$field = $newFieldValue;
                 }
+            ";
+        }
+
+        $str .= "
+            public findAllBy$field($field" . "Value) {
+                $nullConstraint
+                \$query = 'SELECT * FROM $this->_Table WHERE `$field`= :val';
+                return \$this->getAll(\$query, array(
+                    ':val' => array($fieldValue, $pdoType),
+                ));
             }
-            if ($preparedQuery->execute()) {
-                return $preparedQuery;
-            }
-        } catch (PDOException $e) {
-            throw new MySQLQueryException($e);
-        }
-        return null;
+        ";
+        /**
+         * /*
+         * private ${fieldName};
+         * public function set{FieldName}() {
+         * }
+         * public function get{FieldName}() {
+         *      return $fieldName;
+         * }
+         *
+         * if
+         */
     }
 
     /**
-     * The base create mod
-     * @param unknown_type $query
-     * @param unknown_type $queryParams
-     * @return string|number
+     * Use regex to parse type and size
+     * @param $fieldType - The raw string
+     * @return array - An array describing the type and size
      */
-    protected function createBase($query, $queryParams) {
-        if ($this->process($query, $queryParams)) {
-            return $this->Connection->lastInsertId();
+    private function parseType($fieldType) {
+        preg_match('/((?<fieldType>\w+)(\((?<size>\d+)\))?)/', $fieldType, $matches);
+
+        $fType = "string";
+        switch (strtolower($matches["fieldType"])) {
+            case "int":
+                $fType = "int";
+                break;
+            case "varchar":
+            case "text":
+                $fType = "string";
+                break;
+            case "bit":
+                $fType = "bool";
+                break;
+            case "datetime":
+            case "date":
+                $fType = "date";
+                break;
+
         }
-        return -1;
+
+        return array(
+            "name" => $fType,
+            "size" => $matches["size"]
+        );
     }
 
-    /**
-     * Get a result from mysql query
-     * @param String $query The query to be processed
-     * @param Array $queryParams Extra query string parameters (Format: [name1 => [value1, pdo object type], name2 => [value2, pdo object type], ...])
-     * @return The result entry fetched. Null, if otherwise
-     */
-    protected function getOne($query, $queryParams = null) {
-        $result = $this->process($query, $queryParams);
-        if ($result) {
-            return $result->fetch(PDO::FETCH_ASSOC);
+    private function getPDOType($type) {
+        switch ($type) {
+            case
         }
-        return null;
     }
-
-    /**
-     * Get all results from mysql query
-     * @param String $query The query to be processed
-     * @param Array $queryParams Extra query string parameters (Format: [name1 => [value1, pdo object type], name2 => [value2, pdo object type], ...])
-     * @return An array of results that meets query criteria. Null, if otherwise
-     */
-    protected function getAll($query, $queryParams = null) {
-        $result = $this->process($query, $queryParams);
-        if ($result) {
-            return $result->fetchAll(PDO::FETCH_ASSOC);
-        }
-        return null;
+    // End of schema to file methods
+    protected function modelChanged() {
+        return false;
     }
-
-    /**
-     * Detect whether if a given model has changed
-     * @return True, if the model has changed. False, if otherwise.
-     */
-    abstract protected function modelChanged();
 }
 ?>
