@@ -81,8 +81,9 @@ class ORM extends MySQLAbstract {
 
         $str = "
             <?php
-                public class $this->_Table extends MySQLAbstract.php {
+                require_once(\"MySQLAbstract.php\");
 
+                class $this->_Table extends MySQLAbstract {
         ";
         // add headers
         fwrite($fPtr, $str);
@@ -121,7 +122,7 @@ class ORM extends MySQLAbstract {
         $str = "
             private \$_$field;
             public function get$field() {
-                return \$_$field;
+                return \$this->_$field;
             }
         ";
 
@@ -140,19 +141,20 @@ class ORM extends MySQLAbstract {
             $str .= "
                 public function set$field($newFieldValue) {
                     $nullConstraint
-                    \$_$field = $newFieldValue;
+                    \$this->_$field = $newFieldValue;
                 }
             ";
         }
 
+        $fieldValueAsVar = "\$$fieldValue";
         if ($isPrimaryKey) {
             $resultPlaceHolder = '$result';
             $str .= "
-                public function findBy$field($fieldValue) {
+                public function findBy$field($fieldValueAsVar) {
                     $nullConstraint
                     \$query = 'SELECT * FROM $this->_Table WHERE `$field` = :val';
-                    \$results = \$this->getOne(\$query, array(
-                        ':val' => array($fieldValue, $pdoType),
+                    $resultPlaceHolder = \$this->getOne(\$query, array(
+                        ':val' => array($fieldValueAsVar, $pdoType),
                     ));
                     " . $this->setValueFromFetch(false, $resultPlaceHolder, $tableSchema) . "
                 }
@@ -160,11 +162,11 @@ class ORM extends MySQLAbstract {
         } else {
             $resultPlaceHolder = '$results';
             $str .= "
-                public function findAllBy$field($fieldValue) {
+                public function findAllBy$field($fieldValueAsVar) {
                     $nullConstraint
-                    $resultPlaceHolder = 'SELECT * FROM $this->_Table WHERE `$field`= :val';
+                    \$query = 'SELECT * FROM $this->_Table WHERE `$field`= :val';
                     $resultPlaceHolder = \$this->getAll(\$query, array(
-                        ':val' => array($fieldValue, $pdoType),
+                        ':val' => array($fieldValueAsVar, $pdoType),
                     ));
                     " . $this->setValueFromFetch(true, $resultPlaceHolder, $tableSchema) . "
                 }
@@ -176,27 +178,29 @@ class ORM extends MySQLAbstract {
     private function setValueFromFetch($isMulti, $resultPlaceHolder, $tableSchema) {
         $str = '';
 
-        $itemVal = '$val';
+        $itemVal = $resultPlaceHolder;
         if ($isMulti) {
+            $itemVal = '$val';
             $str = "foreach ($resultPlaceHolder as \$entry => $itemVal) {";
         }
-        $i = '$i = new ' . $this->_Table . '();';
+        $itemVar = "\$item";
+        $i = "$itemVar = new " . $this->_Table . '();';
 
         foreach ($tableSchema as $fieldInfo) {
             $fieldName = $fieldInfo['field'];
             $fieldValue = $itemVal . '["' . $fieldName . '"]';
-            $i .= "\$i->$fieldName = $fieldValue;";
+            $i .= "$itemVar->$fieldName = $fieldValue;";
         }
 
         if ($isMulti) {
             $str .= $i;
             $str .= "
-                \$items[] = \$i;
+                \$items[] = $itemVar;
             }
             return \$items;";
         } else {
-            $str .= "return \$i";
             $str = $i;
+            $str .= "return $itemVar;";
         }
         return $str;
     }
@@ -208,9 +212,11 @@ class ORM extends MySQLAbstract {
      */
     private function parseType($fieldType) {
         preg_match('/((?<fieldType>\w+)(\((?<size>\d+)\))?)/', $fieldType, $matches);
+        $name = $this->getCorrespondingPHPTypeFromMySQL($matches["fieldType"]);
+        $size = array_key_exists("size", $matches) ? $matches["size"] : -1;
         return array(
-            "name" => $this->getCorrespondingPHPTypeFromMySQL($matches["fieldType"]),
-            "size" => $matches["size"]
+            "name" => $name,
+            "size" => $size
         );
     }
 
@@ -276,5 +282,10 @@ class ORM extends MySQLAbstract {
     }
 }
 
+/**
+ * TEST
+ **/
+$test = new ORM("contact", "localhost", "pjhannon-db", "root", "password");
+$test->generateFile();
 
 ?>
