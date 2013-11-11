@@ -26,7 +26,7 @@ indexSupport? (how to handle multiple indices?)
 
 class ORM extends MySQLAbstract {
     private $_Table;
-
+    private $_modelChanged = "\$_modelChanged";
 
     public function __construct($table, $host=null, $dbName=null, $user=null, $pass=null, $options=null) {
         parent::__construct($host, $dbName, $user, $pass, $options);
@@ -72,7 +72,7 @@ class ORM extends MySQLAbstract {
         foreach ($tableSchema as $fieldInfo) {
             fwrite($file, $this->createVar($fieldInfo, $tableSchema));
         }
-        $this->closeFile($file);
+        $this->closeFile($file, $tableSchema);
     }
 
     private function createFile() {
@@ -80,19 +80,23 @@ class ORM extends MySQLAbstract {
         $fPtr = fopen($filename, "w") or die("Can't create file $filename");
 
         $str = "
-            <?php
-                require_once(\"MySQLAbstract.php\");
+        <?php
 
-                class $this->_Table extends MySQLAbstract {
+        require_once(\"MySQLAbstract.php\");
+        class $this->_Table extends MySQLAbstract {
         ";
         // add headers
         fwrite($fPtr, $str);
         return $fPtr;
     }
 
-    private function closeFile($file){
+    private function closeFile($file, $tableSchema){
         $str = "
+            private $this->_modelChanged = false;
+            protected function modelChanged() {
+                return \$this->$this->_modelChanged;
             }
+        }
         ?>
         ";
         fwrite($file, $str);
@@ -142,6 +146,7 @@ class ORM extends MySQLAbstract {
                 public function set$field($newFieldValue) {
                     $nullConstraint
                     \$this->_$field = $newFieldValue;
+                    \$this->$this->_modelChanged = true;
                 }
             ";
         }
@@ -189,7 +194,7 @@ class ORM extends MySQLAbstract {
         foreach ($tableSchema as $fieldInfo) {
             $fieldName = $fieldInfo['field'];
             $fieldValue = $itemVal . '["' . $fieldName . '"]';
-            $i .= "$itemVar->$fieldName = $fieldValue;";
+            $i .= "$itemVar->" . "_$fieldName = $fieldValue;";
         }
 
         if ($isMulti) {
