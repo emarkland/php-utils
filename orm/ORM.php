@@ -384,11 +384,4 @@ class $this->_Table extends MySQLAbstract {
         return false;
     }
 }
-
-/**
- * TEST
- **/
-$test = new ORM("contact", "localhost", "pjhannon-db", "root", "password");
-$test->generateFiles();
-
 ?>
