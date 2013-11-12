@@ -47,6 +47,7 @@ class ORM extends MySQLAbstract {
     }
     // Schema to file methods
     public function generateFiles() {
+        // generate base file
         $file = $this->createBaseFile();
         $tableSchema = $this->getSchema();
         foreach ($tableSchema as $fieldInfo) {
@@ -55,6 +56,9 @@ class ORM extends MySQLAbstract {
         fwrite($file, $this->generateSaveMethods($tableSchema));
         fwrite($file, $this->generateModelChangedMethod());
         $this->closeFile($file);
+
+        // generate extendable file
+        $this->generateExtendedFile();
     }
 
     private function createBaseFile() {
@@ -63,7 +67,8 @@ class ORM extends MySQLAbstract {
 
         $str = "<?php
 require_once(\"MySQLAbstract.php\");
-class $this->_Table extends MySQLAbstract {
+class $this->_Table"."Base extends MySQLAbstract {
+    private \$$this->_existsInDB;
     public function __construct() {
         \$this->$this->_existsInDB = false;
         \$this->$this->_modelChanged = false;
@@ -72,6 +77,20 @@ class $this->_Table extends MySQLAbstract {
         // add headers
         fwrite($fPtr, $str);
         return $fPtr;
+    }
+
+    private function generateExtendedFile() {
+        $filename = $this->_Table . ".php";
+        $fPtr = fopen($filename, "w") or die("Can't create file $filename");
+
+        $str = "<?php
+    require_once(\"$this->_Table"."Base.php\");
+    class $this->_Table extends $this->_Table"."Base {
+        // Extend the $this->_Table class via this file
+    }
+?>";
+        fwrite($fPtr, $str);
+        fclose($fPtr);
     }
     
     private function generateModelChangedMethod() {
@@ -384,4 +403,5 @@ class $this->_Table extends MySQLAbstract {
         return false;
     }
 }
+
 ?>
