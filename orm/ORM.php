@@ -1,37 +1,16 @@
 <?php
 require_once("MySQLAbstract.php");
-/**
- * ORM Needs....
-Primary Key Support
-Foreign Key Support?
-
-Get/Set Methods
-FindAllBy{BLAH, Options}
-FindBy(Primary/Foreign Key)
-Create/Commit() --> Save()?
-
-varchar --> string (with max size)
-datetime --> date
-int --> int (32) or long (64)
-bit --> boolean
-text -> string (unlimited size)
-indexSupport? (how to handle multiple indices?)
-
-
-// establish connection to database
-// generate query to fetch schema
-// generate files into an output directory from schemas
-// should validate that files are correctly generated
- */
 
 class ORM extends MySQLAbstract {
     private $_Table;
-    private $_modelChanged = "\$_modelChanged";
-    private $_existsInDB = "\$_existsInDB";
+    private $_modelChanged = "_modelChanged";
+    private $_existsInDB = "_existsInDB";
+    private $_fillModelFnName;
 
     public function __construct($table, $host=null, $dbName=null, $user=null, $pass=null, $options=null) {
         parent::__construct($host, $dbName, $user, $pass, $options);
         $this->_Table = $table;
+        $this->_fillModelFnName = "fill$table"."model";
     }
     private function getSchema() {
         $query =
@@ -67,107 +46,173 @@ class ORM extends MySQLAbstract {
         echo json_encode($this->parseType($t));
     }
     // Schema to file methods
-    public function generateFile() {
-        $file = $this->createFile();
+    public function generateFiles() {
+        $file = $this->createBaseFile();
         $tableSchema = $this->getSchema();
         foreach ($tableSchema as $fieldInfo) {
-            fwrite($file, $this->createVar($fieldInfo, $tableSchema));
+            fwrite($file, $this->generateVarPropertyAndMethods($fieldInfo));
         }
-        fwrite($file, $this->saveMethod($tableSchema));
-        $this->closeFile($file, $tableSchema);
+        fwrite($file, $this->generateSaveMethods($tableSchema));
+        fwrite($file, $this->generateModelChangedMethod());
+        $this->closeFile($file);
     }
 
+    private function createBaseFile() {
+        $filename = $this->_Table . "Base.php";
+        $fPtr = fopen($filename, "w") or die("Can't create file $filename");
 
-    private function saveMethod($tableSchema) {
-        $primaryKey = null;
-        foreach ($tableSchema as $fieldInfo) {
-            $fieldNames[] = $fieldInfo["Field"];
-            if (strtolower($fieldInfo["key"]) === 'pri') {
-                $primaryKey = $fieldInfo;
-            }
-        }
+        $str = "<?php
+require_once(\"MySQLAbstract.php\");
+class $this->_Table extends MySQLAbstract {
+    public function __construct() {
+        \$this->$this->_existsInDB = false;
+        \$this->$this->_modelChanged = false;
+    }
+";
+        // add headers
+        fwrite($fPtr, $str);
+        return $fPtr;
+    }
+    
+    private function generateModelChangedMethod() {
+        return "
+        private \$$this->_modelChanged = false;
+        protected function modelChanged() {
+           return \$this->$this->_modelChanged;
+        }";
+    }
 
-
+    private function closeFile($file){
         $str = "
+}
+?>";
+        fwrite($file, $str);
+        fclose($file);
+    }
+
+    private function generateSaveMethods($tableSchema) {
+        $str = $this->writeSaveMethod();
+        $str .= $this->writeFillModelMethod($tableSchema);
+        $str .= $this->writeCreateMethod($tableSchema);
+        $str .= $this->writeCommitMethod($tableSchema);
+        return $str;
+    }
+
+    private function writeSaveMethod() {
+        return "
             /**
             * Save $this->_Table into database
             * @return True, if saved into database. False, if otherwise.
             **/
             public function save() {
-                if (\$this->$this->_existsInDB && !\$this->$this->modelChanged) {
+                if (\$this->$this->_existsInDB && !\$this->$this->_modelChanged) {
                     return false;
                 }
-                return (\$_this->$this->_existsInDB) ? \$this->create() : \$this->commit();
+
+                \$res = (\$this->$this->_existsInDB) ? \$this->create() : \$this->commit();
+                if (\$res) {
+                    \$this->\$this->$this->_modelChanged = false;
+                }
+                return \$res;
             }
+        ";
+    }
 
-            private function create() {
-                \$query = \"INSERT INTO $this->_Table . ('" . implode("','", $fieldNames) . "')" .
-                " VALUES (" . ":" . implode(",:", $fieldNames) . ")\";
-
-                \$result = \$this->createBase(\$query, array(";
+    private function writeFillModelMethod($tableSchema) {
+        $reader = "\$reader";
+        $item = "\$item";
+        $str = "
+        private static function $this->_fillModelFnName($reader) {
+            $item = new $this->_Table();";
 
         foreach ($tableSchema as $fieldInfo) {
-            $name = $fieldInfo["Field"];
-            $pdoType = $this->getPDOTypeAsString($fieldInfo["name"]);
+            $fieldName = $fieldInfo['field'];
+            $fieldValue = $reader . '["' . $fieldName . '"]';
             $str .= "
-            :$name => array('\$this->$name', $pdoType);";
+            $item->" . "_$fieldName = $fieldValue;";
         }
-        $str .= "));
-                if (\$result === null || \$result === -1) return false;
-                \$this->$this->_existsInDB = true;
-                return true;
-            }
 
-            private function commit() {
-                \$query = \"UPDATE $this->_Table SET ";
+        $str .= "
+            $item->$this->_modelChanged = false;
+            $item->$this->_existsInDB = true;
+            return $item;
+        }";
+        return $str;
+    }
+
+    private function writeCreateMethod($tableSchema) {
+        $field = "field";
         foreach ($tableSchema as $fieldInfo) {
-            if ($fieldInfo["Field"] !== $primaryKey["Field"]) {
-                $str .= "`fieldInfo['Field']`=:$fieldInfo,";
-            }
+            $fieldNames[] = $fieldInfo[$field];
+        }
+
+        $str = "
+        private function create() {
+            \$query = \"INSERT INTO $this->_Table (`" . implode("`,`", $fieldNames) . "`) VALUES (" . ":" . implode(",:", $fieldNames) . ")\";
+            \$result = \$this->createBase(\$query, array(";
+
+        foreach ($tableSchema as $fieldInfo) {
+            $name = $fieldInfo[$field];
+            $type = $this->parseType($fieldInfo["type"]);
+            $pdoType = $this->getPDOTypeAsString($type["name"]);
+            $str .= "
+                    ':$name' => array(\$this->$name, $pdoType),";
         }
         $str = substr($str, 0, -1);
-        $primaryFieldName = $primaryKey["Field"];
-        $str .= " WHERE `$primaryFieldName`=:$primaryFieldName
-        \$result = \$this->process(\$query, array(";
+        $str .= "
+            ));
+            \$this->$this->_existsInDB = (\$result === null || \$result === -1);
+            return \$this->$this->_existsInDB;
+        }";
+        return $str;
+    }
+
+    private function writeCommitMethod($tableSchema) {
+        $field = "field";
+        $primaryKey = null;
+        foreach ($tableSchema as $fieldInfo) {
+            if (strtolower($fieldInfo["key"]) === 'pri') {
+                $primaryKey = $fieldInfo;
+            }
+        }
+        if ($primaryKey === null) {
+            //TODO: Should just exit method?
+            die("Can't generate update method without primary key");
+        }
+
+        $str = "
+        private function commit() {
+            \$query = \"UPDATE $this->_Table SET ";
+
+        // fill in update params
+        foreach ($tableSchema as $fieldInfo) {
+            if ($fieldInfo[$field] !== $primaryKey[$field]) {
+                $str .= "`$fieldInfo[$field]`=:$fieldInfo[$field],";
+            }
+        }
+        // remove last char (the ',' character) from loop
+        $str = substr($str, 0, -1);
+
+        $primaryFieldName = $primaryKey[$field];
+        $str .= " WHERE `$primaryFieldName`=:$primaryFieldName\";
+            \$result = \$this->process(\$query, array(";
 
         foreach ($tableSchema as $fieldInfo) {
-            $name = $fieldInfo["Field"];
-            $pdoType = $this->getPDOTypeAsString($fieldInfo["name"]);
-            $str .= "':$name' => array(\$this->$name, $pdoType),";
+            $name = $fieldInfo[$field];
+            $type = $this->parseType($fieldInfo["type"]);
+            $pdoType = $this->getPDOTypeAsString($type["name"]);
+            $str .= "
+                    ':$name' => array(\$this->$name, $pdoType),";
         }
-        $str .= "));
-        return \$result == null;
-        ";
+        $str .= "
+            ));
+            return \$result == null;
+        }";
 
         return $str;
     }
 
-    private function createFile() {
-        $filename = $this->_Table . ".php";
-        $fPtr = fopen($filename, "w") or die("Can't create file $filename");
-
-        $str = "<?php
-require_once(\"MySQLAbstract.php\");
-class $this->_Table extends MySQLAbstract {";
-        // add headers
-        fwrite($fPtr, $str);
-        return $fPtr;
-    }
-
-    private function closeFile($file, $tableSchema){
-        $str = "
-    private $this->_modelChanged = false;
-    protected function modelChanged() {
-        return \$this->$this->_modelChanged;
-    }
-}
-?>
-        ";
-        fwrite($file, $str);
-        fclose($file);
-    }
-
-    private function createVar($fieldInfo, $tableSchema)
+    private function generateVarPropertyAndMethods($fieldInfo)
     {
         $field = $fieldInfo["field"];
         $fieldValue = $field . "Value";
@@ -177,7 +222,7 @@ class $this->_Table extends MySQLAbstract {";
 
         $null = $fieldInfo["null"];
         $isNullable = $null === "YES";
-        $nullConstraint = "";
+        $nullConstraint = null;
 
         $key = $fieldInfo["key"];
         $isPrimaryKey = strtolower($key) === 'pri';
@@ -188,93 +233,75 @@ class $this->_Table extends MySQLAbstract {";
         $canAutoIncrement = strpos($extra, 'auto_increment') !== FALSE;
 
         $str = "
-    private \$_$field;
-    public function get$field() {
-        return \$this->_$field;
-    }
-        ";
+        private \$_$field;
+        public function get$field() {
+            return \$this->_$field;
+        }";
 
         if (!$canAutoIncrement) {
-            $newFieldValue = "\$new" . $fieldValue;
 
-            $nullConstraint = '';
-            if ($isNullable) {
+            if (!$isNullable) {
                 $nullConstraint = "
-                    if ($newFieldValue == NULL) {
-                        die('\'$newFieldValue\' can't be null');
-                    }
-                ";
+            if (\$$fieldValue == NULL) {
+                die('$fieldValue can not be null');
+            }";
             }
 
             $str .= "
-    public function set$field($newFieldValue) { ";
-            if ($nullConstraint !== '') {
-                $str .= $nullConstraint;
-            }
-            $str .= "
-        \$this->_$field = $newFieldValue;
-        \$this->$this->_modelChanged = true;
-    }";
+        public function set$field(\$$fieldValue) { ";
+                if ($nullConstraint !== '') {
+                    $str .= $nullConstraint;
+                }
+                $str .= "
+            \$this->_$field = \$$fieldValue;
+            \$this->$this->_modelChanged = true;
+        }";
         }
 
-        $fieldValueAsVar = "\$$fieldValue";
         if ($isPrimaryKey) {
-            $resultPlaceHolder = '$result';
-            $str .= "
-    public function findBy$field($fieldValueAsVar) {
-        $nullConstraint
-        \$query = 'SELECT * FROM $this->_Table WHERE `$field` = :val';
-        $resultPlaceHolder = \$this->getOne(\$query, array(
-            ':val' => array($fieldValueAsVar, $pdoType),
-        ));
-        " . $this->setValueFromFetch(false, $resultPlaceHolder, $tableSchema) . "
-    }";
+            $str .= $this->writeFindByMethod($field, $pdoType, $nullConstraint);
         } else {
-            $resultPlaceHolder = '$results';
-            $str .= "
-    public function findAllBy$field($fieldValueAsVar) {
-        $nullConstraint
-        \$query = 'SELECT * FROM $this->_Table WHERE `$field`= :val';
-        $resultPlaceHolder = \$this->getAll(\$query, array(
-            ':val' => array($fieldValueAsVar, $pdoType),
-        ));
-        " . $this->setValueFromFetch(true, $resultPlaceHolder, $tableSchema) . "
-    }
-    ";
+            $str .= $this->writeFindAllByMethod($field, $pdoType, $nullConstraint);
         }
         return $str;
     }
 
-    private function setValueFromFetch($isMulti, $resultPlaceHolder, $tableSchema) {
-        $str = '';
+    private function writeFindByMethod($field, $pdoType, $nullConstraint=null) {
+        $str = "
+        public static function findBy$field(\$$field"."Value) {
+            ";
+        if ($nullConstraint !== null) {
+            $str .= $nullConstraint;
+        }
+        $str .= "
+            \$$this->_Table = new $this->_Table();
+            \$query = 'SELECT * FROM $this->_Table WHERE `$field` = :val';
+            \$result = \$$this->_Table->getOne(\$query, array(
+                ':val' => array(\$$field"."Value, $pdoType),
+            ));
+            return $this->_Table::$this->_fillModelFnName(\$result);
+        }";
+        return $str;
+    }
 
-        $itemVal = $resultPlaceHolder;
-        if ($isMulti) {
-            $itemVal = '$val';
-            $str = "foreach ($resultPlaceHolder as \$entry => $itemVal) {";
+    private function writeFindAllByMethod($field, $pdoType, $nullConstraint=null) {
+        $str = "
+        public static function findAllBy$field(\$$field"."Value) {
+            ";
+        if ($nullConstraint !== null) {
+            $str .= $nullConstraint;
         }
-        $itemVar = "\$item";
-        $i = "
-            $itemVar = new " . $this->_Table . '();';
-
-        foreach ($tableSchema as $fieldInfo) {
-            $fieldName = $fieldInfo['field'];
-            $fieldValue = $itemVal . '["' . $fieldName . '"]';
-            $i .= "
-            $itemVar->" . "_$fieldName = $fieldValue;";
-        }
-
-        if ($isMulti) {
-            $str .= $i;
-            $str .= "
-            \$items[] = $itemVar;
-        }
-        return \$items;";
-        } else {
-            $str = $i;
-            $str .= "
-            return $itemVar;";
-        }
+        $str .= "
+            \$$this->_Table = new $this->_Table();
+            \$query = 'SELECT * FROM $this->_Table WHERE `$field`= :val';
+            \$result = \$$this->_Table->getAll(\$query, array(
+                ':val' => array(\$$field"."Value, $pdoType),
+            ));
+            foreach (\$result as \$entry => \$value) {
+                \$items[] = $this->_Table::$this->_fillModelFnName(\$value);
+            }
+            return \$items;
+        }";
         return $str;
     }
 
@@ -296,6 +323,9 @@ class $this->_Table extends MySQLAbstract {";
     private function getCorrespondingPHPTypeFromMySQL($fieldType) {
         switch (strtolower($fieldType)) {
             case "int":
+            case "tinyint":
+            case "mediumint":
+            case "longint":
                 return "int";
             case "decimal":
                 return "double";
@@ -359,6 +389,6 @@ class $this->_Table extends MySQLAbstract {";
  * TEST
  **/
 $test = new ORM("contact", "localhost", "pjhannon-db", "root", "password");
-$test->generateFile();
+$test->generateFiles();
 
 ?>
