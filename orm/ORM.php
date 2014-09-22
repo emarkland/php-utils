@@ -141,7 +141,7 @@ class $this->_Table"."Base extends MySQLAbstract {
         $reader = "\$reader";
         $item = "\$item";
         $str = "
-    private static function $this->_fillModelFnName($reader) {
+    protected static function $this->_fillModelFnName($reader) {
         $item = new $this->_Table();";
 
         foreach ($tableSchema as $fieldInfo) {
