@@ -9,8 +9,9 @@ class ORM extends MySQLAbstract {
 
     public function __construct($table, $host=null, $dbName=null, $user=null, $pass=null, $options=null) {
         parent::__construct($host, $dbName, $user, $pass, $options);
-        $this->_Table = $table;
-        $this->_fillModelFnName = "fill$table"."model";
+        $capTable = $this->capitalize_string($table);
+        $this->_Table = $capTable;
+        $this->_fillModelFnName = "fill$capTable"."Model";
     }
     private function getSchema() {
         $query =
@@ -148,7 +149,7 @@ class $this->_Table"."Base extends MySQLAbstract {
             $fieldName = $fieldInfo['field'];
             $fieldValue = $reader . '["' . $fieldName . '"]';
             $str .= "
-            $item->" . "_$fieldName = $fieldValue;";
+            $item->" . "_". $this->capitalize_string($fieldName) . " = $fieldValue;";
         }
 
         $str .= "
@@ -175,7 +176,7 @@ class $this->_Table"."Base extends MySQLAbstract {
             $type = $this->parseType($fieldInfo["type"]);
             $pdoType = $this->getPDOTypeAsString($type["name"]);
             $str .= "
-                    ':$name' => array(\$this->$name, $pdoType),";
+                    ':$name' => array(\$this->_" . $this->capitalize_string($name) . ", $pdoType),";
         }
         $str = substr($str, 0, -1);
         $str .= "
@@ -221,7 +222,7 @@ class $this->_Table"."Base extends MySQLAbstract {
             $type = $this->parseType($fieldInfo["type"]);
             $pdoType = $this->getPDOTypeAsString($type["name"]);
             $str .= "
-                    ':$name' => array(\$this->$name, $pdoType),";
+                    ':$name' => array(\$this->_" . $this->capitalize_string($name) . ", $pdoType),";
         }
         $str .= "
             ));
@@ -231,17 +232,37 @@ class $this->_Table"."Base extends MySQLAbstract {
         return $str;
     }
 
+    function capitalize_string($field) {
+        $str = strtoupper(substr($field, 0, 1)) . substr($field, 1);
+        if ($this->contains_substr($str, '_id')) {
+            $str = substr($str, 0, strlen($str)-3) . 'ID';
+        }
+        return $str;
+    }
+
+    function contains_substr($mainStr, $str, $loc = false) {
+        if ($loc === false) return (strpos($mainStr, $str) !== false);
+        if (strlen($mainStr) < strlen($str)) return false;
+        if (($loc + strlen($str)) > strlen($mainStr)) return false;
+        return (strcmp(substr($mainStr, $loc, strlen($str)), $str) == 0);
+    }
+
     private function generateVarPropertyAndMethods($fieldInfo)
     {
         $field = $fieldInfo["field"];
-        $fieldValue = $field . "Value";
+        $capitalizedField = $this->capitalize_string($field);
+        $fieldValue = $capitalizedField . "Value";
 
         $type = $this->parseType($fieldInfo["type"]);
         $pdoType = $this->getPDOTypeAsString($type["name"]);
 
-        $null = $fieldInfo["null"];
-        $isNullable = $null === "YES";
         $nullConstraint = null;
+        if ($fieldInfo["null"] !== "YES") {
+            $nullConstraint = "
+            if (\$$fieldValue == NULL) {
+                die('$fieldValue can not be null');
+            }";
+        }
 
         $key = $fieldInfo["key"];
         $isPrimaryKey = strtolower($key) === 'pri';
@@ -252,27 +273,19 @@ class $this->_Table"."Base extends MySQLAbstract {
         $canAutoIncrement = strpos($extra, 'auto_increment') !== FALSE;
 
         $str = "
-        private \$_$field;
-        public function get$field() {
-            return \$this->_$field;
+        private \$_$capitalizedField;
+        public function get$capitalizedField() {
+            return \$this->_$capitalizedField;
         }";
 
         if (!$canAutoIncrement) {
-
-            if (!$isNullable) {
-                $nullConstraint = "
-            if (\$$fieldValue == NULL) {
-                die('$fieldValue can not be null');
-            }";
-            }
-
             $str .= "
-        public function set$field(\$$fieldValue) { ";
-                if ($nullConstraint !== '') {
+        public function set$capitalizedField(\$$fieldValue) { ";
+                if ($nullConstraint !== null) {
                     $str .= $nullConstraint;
                 }
                 $str .= "
-            \$this->_$field = \$$fieldValue;
+            \$this->_$capitalizedField = \$$fieldValue;
             \$this->$this->_modelChanged = true;
         }";
         }
@@ -286,8 +299,9 @@ class $this->_Table"."Base extends MySQLAbstract {
     }
 
     private function writeFindByMethod($field, $pdoType, $nullConstraint=null) {
+        $capField = $this->capitalize_string($field);
         $str = "
-        public static function findBy$field(\$$field"."Value) {
+        public static function findBy$capField(\$$capField"."Value) {
             ";
         if ($nullConstraint !== null) {
             $str .= $nullConstraint;
@@ -296,7 +310,7 @@ class $this->_Table"."Base extends MySQLAbstract {
             \$$this->_Table = new $this->_Table();
             \$query = 'SELECT * FROM $this->_Table WHERE `$field` = :val';
             \$result = \$$this->_Table->getOne(\$query, array(
-                ':val' => array(\$$field"."Value, $pdoType),
+                ':val' => array(\$$capField"."Value, $pdoType),
             ));
             return $this->_Table::$this->_fillModelFnName(\$result);
         }";
@@ -304,8 +318,9 @@ class $this->_Table"."Base extends MySQLAbstract {
     }
 
     private function writeFindAllByMethod($field, $pdoType, $nullConstraint=null) {
+        $capField = $this->capitalize_string($field);
         $str = "
-        public static function findAllBy$field(\$$field"."Value) {
+        public static function findAllBy$capField(\$$capField"."Value) {
             ";
         if ($nullConstraint !== null) {
             $str .= $nullConstraint;
@@ -314,7 +329,7 @@ class $this->_Table"."Base extends MySQLAbstract {
             \$$this->_Table = new $this->_Table();
             \$query = 'SELECT * FROM $this->_Table WHERE `$field`= :val';
             \$result = \$$this->_Table->getAll(\$query, array(
-                ':val' => array(\$$field"."Value, $pdoType),
+                ':val' => array(\$$capField"."Value, $pdoType),
             ));
             foreach (\$result as \$entry => \$value) {
                 \$items[] = $this->_Table::$this->_fillModelFnName(\$value);
